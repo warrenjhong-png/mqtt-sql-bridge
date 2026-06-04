@@ -1,0 +1,14 @@
+version: "3.8"
+
+services:
+  mqtt-sql-bridge:
+    build: .
+    container_name: mqtt_sql_bridge
+    restart: always
+    volumes:
+      - ./logs:/app/logs
+      - ./raw_json:/app/raw_json
+      - ./config.yaml:/app/config.yaml:ro
+      - ./field_mapping.yaml:/app/field_mapping.yaml:ro
+    environment:
+      - TZ=Asia/Taipei

@@ -1,0 +1,37 @@
+mqtt:
+  broker: "192.168.1.100"
+  port: 1883
+  username: ""
+  password: ""
+  client_id: "mqtt_sql_bridge"
+  keepalive: 60
+  reconnect_delay: 10
+  topics:
+    - topic: "factory/compressor/01"
+      table: "CompressorData_01"
+    - topic: "factory/compressor/02"
+      table: "CompressorData_02"
+    - topic: "factory/compressor/03"
+      table: "CompressorData_03"
+
+db:
+  server: "192.168.1.200"
+  database: "FactoryDB"
+  username: "sa"
+  password: "your_password"
+  driver: "ODBC Driver 17 for SQL Server"
+  reconnect_delay: 5
+
+log:
+  dir: "logs"
+  level: "INFO"
+
+raw_json:
+  dir: "raw_json"
+
+queue_maxsize: 10000
+
+# Downsampling (optional)
+# 0 = 關閉，每筆資料直接寫入 DB（預設）
+# N = 每 N 秒將收到的所有訊息平均為一筆後寫入 DB
+sampling_interval_seconds: 0

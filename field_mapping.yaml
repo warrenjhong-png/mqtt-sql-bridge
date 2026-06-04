@@ -1,0 +1,15 @@
+FIELD_1: area_entrance_instant_flow
+FIELD_2: area_entrance_gas_pressure
+FIELD_3: compressor_outlet_instant_flow
+FIELD_4: compressor_outlet_pressure
+FIELD_5: air_tank_pressure
+FIELD_6: compressor_pressure_set_point
+FIELD_7: vfd_motor_frequency
+FIELD_8: compressor_inlet_temp
+FIELD_9: compressor_outlet_temp
+FIELD_10: compressor_operating_temp
+FIELD_11: compressor_energy_consumption
+FIELD_12: compressor_power
+FIELD_13: compressor_input_current
+FIELD_14: compressor_input_voltage
+FIELD_15: timestamp
