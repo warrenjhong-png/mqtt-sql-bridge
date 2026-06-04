@@ -7,11 +7,11 @@ mqtt:
   keepalive: 60
   reconnect_delay: 10
   topics:
-    - topic: "factory/compressor/01"
+    - topic: "zhongli/zone1/compressor/c1/telemetry"
       table: "CompressorData_01"
-    - topic: "factory/compressor/02"
+    - topic: "zhongli/zone1/compressor/c2/telemetry"
       table: "CompressorData_02"
-    - topic: "factory/compressor/03"
+    - topic: "zhongli/zone1/compressor/c3/telemetry"
       table: "CompressorData_03"
 
 db:
