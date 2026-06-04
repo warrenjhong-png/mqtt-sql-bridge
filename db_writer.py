@@ -46,6 +46,7 @@ class DBWriter:
             f"DATABASE={self.db_config.database};"
             f"UID={self.db_config.username};"
             f"PWD={self.db_config.password};"
+            "TrustServerCertificate=yes;"
         )
         self._conn = pyodbc.connect(conn_str, timeout=10)
         self.logger.info(f"DB connected to {self.db_config.server}/{self.db_config.database}")
