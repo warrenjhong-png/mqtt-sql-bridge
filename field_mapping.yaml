@@ -15,4 +15,3 @@ FIELD_14: compressor_energy_consumption
 FIELD_15: compressor_power
 FIELD_16: compressor_input_current
 FIELD_17: compressor_input_voltage
-FIELD_18: timestamp

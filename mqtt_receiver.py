@@ -25,7 +25,10 @@ class MQTTReceiver:
             tm.topic: tm.table for tm in mqtt_config.topics
         }
 
-        self._client = mqtt.Client(client_id=mqtt_config.client_id)
+        self._client = mqtt.Client(
+            mqtt.CallbackAPIVersion.VERSION1,
+            client_id=mqtt_config.client_id,
+        )
         self._client.on_connect = self._on_connect
         self._client.on_disconnect = self._on_disconnect
         self._client.on_message = self._on_message
@@ -66,6 +69,10 @@ class MQTTReceiver:
             table = self._topic_table_map.get(msg.topic)
             if not table:
                 self.logger.warning(f"Unknown topic: {msg.topic}")
+                return
+
+            if not msg.payload:
+                self.logger.warning(f"Empty payload on topic: {msg.topic}, skipped")
                 return
 
             payload = json.loads(msg.payload.decode("utf-8"))

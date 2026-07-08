@@ -2,7 +2,7 @@ import json
 import logging
 import os
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 
 
 class RawJsonWriter:
@@ -35,6 +35,20 @@ class RawJsonWriter:
         self._file = open(path, "a", encoding="utf-8")
         self._current_date = date_str
         self.logger.info(f"RawJsonWriter rotated to {path}")
+        self._cleanup_old_files()
+
+    def _cleanup_old_files(self, keep_days: int = 7):
+        cutoff = datetime.now() - timedelta(days=keep_days)
+        for filename in os.listdir(self.raw_json_dir):
+            if not filename.endswith(".jsonl"):
+                continue
+            try:
+                file_date = datetime.strptime(filename.replace(".jsonl", ""), "%Y-%m-%d")
+                if file_date < cutoff:
+                    os.remove(os.path.join(self.raw_json_dir, filename))
+                    self.logger.info(f"RawJsonWriter deleted old file: {filename}")
+            except ValueError:
+                pass
 
     def close(self):
         with self._lock:

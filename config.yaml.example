@@ -1,0 +1,35 @@
+mqtt:
+  broker: "YOUR_MQTT_BROKER_IP"
+  port: 1883
+  username: ""
+  password: ""
+  client_id: "mqtt_sql_bridge_primary"
+  keepalive: 60
+  reconnect_delay: 10
+  topics:
+    - topic: "your/mqtt/topic1"
+      table: "YOUR_TABLE_NAME_1"
+    - topic: "your/mqtt/topic2"
+      table: "YOUR_TABLE_NAME_2"
+
+db:
+  server: "YOUR_SQL_SERVER_IP"
+  database: "YOUR_DATABASE_NAME"
+  username: "YOUR_DB_USERNAME"
+  password: "YOUR_DB_PASSWORD"
+  driver: "ODBC Driver 18 for SQL Server"
+  reconnect_delay: 5
+
+log:
+  dir: "logs"
+  level: "INFO"
+
+raw_json:
+  dir: "raw_json"
+
+queue_maxsize: 10000
+
+# Downsampling (optional)
+# 0 = 關閉，每筆資料直接寫入 DB（預設）
+# N = 每 N 秒將收到的所有訊息平均為一筆後寫入 DB
+sampling_interval_seconds: 0

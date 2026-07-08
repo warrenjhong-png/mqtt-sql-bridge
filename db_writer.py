@@ -1,9 +1,13 @@
 import logging
 import queue
 import threading
+import time
+from datetime import datetime
 from typing import Dict
 
 import pyodbc
+
+KEEPALIVE_INTERVAL = 300  # seconds, ping DB every 5 minutes to prevent idle disconnect
 
 
 class DBWriter:
@@ -22,6 +26,7 @@ class DBWriter:
         self._fields = sorted(field_mapping.items())
 
         self._conn = None
+        self._last_keepalive = 0.0
         self._stop_event = threading.Event()
         self._thread = threading.Thread(target=self._run, name="DBWriter", daemon=True)
 
@@ -66,13 +71,34 @@ class DBWriter:
         field_names = [f for f, _ in self._fields]
         values = [payload.get(key) for _, key in self._fields]
 
+        timetag = None
+        timetag_str = payload.get("Timestamp")
+        if timetag_str:
+            try:
+                timetag = datetime.fromisoformat(timetag_str)
+            except (ValueError, TypeError):
+                self.logger.warning(f"Invalid Timestamp format: {timetag_str!r}, falling back to GETDATE()")
+
         columns = ", ".join(field_names)
         placeholders = ", ".join(["?"] * len(field_names))
-        sql = f"INSERT INTO [{table}] (TIMETAG, {columns}) VALUES (GETDATE(), {placeholders})"
+        if timetag is not None:
+            sql = f"INSERT INTO [{table}] (TIMETAG, TIME01, {columns}) VALUES (?, GETDATE(), {placeholders})"
+            values = [timetag] + values
+        else:
+            sql = f"INSERT INTO [{table}] (TIMETAG, TIME01, {columns}) VALUES (GETDATE(), GETDATE(), {placeholders})"
 
         cursor = self._conn.cursor()
         cursor.execute(sql, values)
         self._conn.commit()
+
+    def _keepalive(self):
+        """Send a lightweight query to prevent idle connection drop by firewall/server."""
+        try:
+            self._conn.cursor().execute("SELECT 1")
+            self._last_keepalive = time.monotonic()
+        except Exception as e:
+            self.logger.warning(f"DB keepalive failed: {e}, will reconnect")
+            self._conn = None
 
     def _run(self):
         while not self._stop_event.is_set():
@@ -83,13 +109,23 @@ class DBWriter:
             try:
                 item = self.msg_queue.get(timeout=1)
             except queue.Empty:
+                # No messages — check if keepalive is due
+                if time.monotonic() - self._last_keepalive >= KEEPALIVE_INTERVAL:
+                    self._keepalive()
                 continue
 
             try:
                 self._insert(item["table"], item["payload"])
+                self._last_keepalive = time.monotonic()  # insert counts as activity
             except pyodbc.Error as e:
-                self.logger.error(f"DB insert error: {e} (data saved in raw_json)")
-                self._conn = None
+                sqlstate = e.args[0] if e.args else ""
+                if sqlstate == "23000":
+                    # Duplicate primary key — another instance already wrote this record, skip silently
+                    self.logger.debug(f"Duplicate record skipped (another instance may have written it): {e}")
+                else:
+                    # Real connection error — trigger reconnect
+                    self.logger.error(f"DB insert error: {e} (data saved in raw_json)")
+                    self._conn = None
             except Exception as e:
                 self.logger.error(f"Unexpected DB error: {e}")
             finally:
