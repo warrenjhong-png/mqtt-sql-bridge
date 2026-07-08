@@ -54,14 +54,13 @@ class DataAggregator:
             # Flush remaining buffered data before shutdown
             self._flush(reason="shutdown")
 
-    def ingest(self, table: str, payload: dict):
+    def ingest(self, table: str, payload: dict, context=None):
         """Called by MQTTReceiver on every incoming message."""
         if self.interval == 0:
-            # Pass-through: directly enqueue
-            self._enqueue(table, payload)
+            self._enqueue(table, payload, context)
         else:
             with self._lock:
-                self._buffers.setdefault(table, []).append(payload)
+                self._buffers.setdefault(table, []).append((payload, context))
 
     # ------------------------------------------------------------------
     # Internal
@@ -76,18 +75,20 @@ class DataAggregator:
             buffers_snapshot = self._buffers
             self._buffers = {}
 
-        for table, payloads in buffers_snapshot.items():
-            if not payloads:
+        for table, entries in buffers_snapshot.items():
+            if not entries:
                 continue
+            payloads = [p for p, _ in entries]
+            context = entries[-1][1]
             averaged = self._average(payloads)
             self.logger.debug(
                 f"[{reason}] Aggregated {len(payloads)} sample(s) → {table}"
             )
-            self._enqueue(table, averaged)
+            self._enqueue(table, averaged, context)
 
-    def _enqueue(self, table: str, payload: dict):
+    def _enqueue(self, table: str, payload: dict, context=None):
         try:
-            self.msg_queue.put_nowait({"table": table, "payload": payload})
+            self.msg_queue.put_nowait({"table": table, "payload": payload, "context": context})
         except queue.Full:
             self.logger.warning("Queue is full, dropping message")
 

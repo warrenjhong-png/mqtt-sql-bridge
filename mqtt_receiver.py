@@ -21,9 +21,7 @@ class MQTTReceiver:
         self.raw_json_writer = raw_json_writer
         self.logger = logger
 
-        self._topic_table_map: Dict[str, str] = {
-            tm.topic: tm.table for tm in mqtt_config.topics
-        }
+        self._topic_map = {tm.topic: tm for tm in mqtt_config.topics}
 
         self._client = mqtt.Client(
             mqtt.CallbackAPIVersion.VERSION1,
@@ -66,8 +64,8 @@ class MQTTReceiver:
 
     def _on_message(self, client, userdata, msg):
         try:
-            table = self._topic_table_map.get(msg.topic)
-            if not table:
+            tm = self._topic_map.get(msg.topic)
+            if not tm:
                 self.logger.warning(f"Unknown topic: {msg.topic}")
                 return
 
@@ -78,10 +76,10 @@ class MQTTReceiver:
             payload = json.loads(msg.payload.decode("utf-8"))
 
             # Always save raw JSON locally (before any averaging)
-            self.raw_json_writer.write(table, payload)
+            self.raw_json_writer.write(tm.table, payload)
 
             # Hand off to aggregator (pass-through or downsampling)
-            self.aggregator.ingest(table, payload)
+            self.aggregator.ingest(tm.table, payload, tm.context)
 
         except json.JSONDecodeError as e:
             self.logger.error(f"JSON decode error: {e} | raw: {msg.payload}")

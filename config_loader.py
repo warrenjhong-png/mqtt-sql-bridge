@@ -5,9 +5,18 @@ import yaml
 
 
 @dataclass
+class TopicContext:
+    factory_code: str
+    system_type: str
+    equipment_type: str
+    machine_id: str
+
+
+@dataclass
 class TopicTableMapping:
     topic: str
     table: str
+    context: TopicContext
 
 
 @dataclass
@@ -79,7 +88,16 @@ class ConfigLoader:
             keepalive=mqtt_raw.get("keepalive", 60),
             reconnect_delay=mqtt_raw.get("reconnect_delay", 10),
             topics=[
-                TopicTableMapping(topic=t["topic"], table=t["table"])
+                TopicTableMapping(
+                    topic=t["topic"],
+                    table=t["table"],
+                    context=TopicContext(
+                        factory_code=t.get("context", {}).get("factory_code", ""),
+                        system_type=t.get("context", {}).get("system_type", ""),
+                        equipment_type=t.get("context", {}).get("equipment_type", ""),
+                        machine_id=t.get("context", {}).get("machine_id", ""),
+                    ),
+                )
                 for t in mqtt_raw["topics"]
             ],
         )

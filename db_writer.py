@@ -67,7 +67,20 @@ class DBWriter:
             self._stop_event.wait(self.db_config.reconnect_delay)
             return False
 
-    def _insert(self, table: str, payload: dict):
+    def _build_context_id(self, context, payload: dict) -> str:
+        module_type = payload.get("compressor_drive_type", "")
+        ts_str = payload.get("Timestamp", "")
+        try:
+            serial = datetime.fromisoformat(ts_str).strftime("%Y%m%d%H%M%S")
+        except (ValueError, TypeError):
+            serial = datetime.now().strftime("%Y%m%d%H%M%S")
+        return (
+            f"{context.factory_code}_{context.system_type}_"
+            f"{context.equipment_type}_{context.machine_id}_"
+            f"{module_type}_{serial}"
+        )
+
+    def _insert(self, table: str, payload: dict, context=None):
         field_names = [f for f, _ in self._fields]
         values = [payload.get(key) for _, key in self._fields]
 
@@ -79,14 +92,54 @@ class DBWriter:
             except (ValueError, TypeError):
                 self.logger.warning(f"Invalid Timestamp format: {timetag_str!r}, falling back to GETDATE()")
 
+        context_id = self._build_context_id(context, payload) if context else None
+
         columns = ", ".join(field_names)
         placeholders = ", ".join(["?"] * len(field_names))
         if timetag is not None:
-            sql = f"INSERT INTO [{table}] (TIMETAG, TIME01, {columns}) VALUES (?, GETDATE(), {placeholders})"
-            values = [timetag] + values
+            sql = f"INSERT INTO [{table}] (CONTEXTID, TIMETAG, TIME01, {columns}) VALUES (?, ?, GETDATE(), {placeholders})"
+            values = [context_id, timetag] + values
         else:
-            sql = f"INSERT INTO [{table}] (TIMETAG, TIME01, {columns}) VALUES (GETDATE(), GETDATE(), {placeholders})"
+            sql = f"INSERT INTO [{table}] (CONTEXTID, TIMETAG, TIME01, {columns}) VALUES (?, GETDATE(), GETDATE(), {placeholders})"
+            values = [context_id] + values
 
+        cursor = self._conn.cursor()
+        cursor.execute(sql, values)
+        self._conn.commit()
+
+        if context:
+            self._insert_metrology(context_id, timetag, payload)
+            self._insert_syssetting(context_id, timetag, context, payload)
+
+    def _insert_metrology(self, context_id: str, timetag, payload: dict):
+        energy = payload.get("compressor_energy_consumption")
+        flow   = payload.get("area_entrance_instant_flow")
+        if timetag is not None:
+            sql = "INSERT INTO [METROLOGY] (CONTEXTID, TIMETAG, FIELD_1, FIELD_2) VALUES (?, ?, ?, ?)"
+            values = [context_id, timetag, energy, flow]
+        else:
+            sql = "INSERT INTO [METROLOGY] (CONTEXTID, TIMETAG, FIELD_1, FIELD_2) VALUES (?, GETDATE(), ?, ?)"
+            values = [context_id, energy, flow]
+        cursor = self._conn.cursor()
+        cursor.execute(sql, values)
+        self._conn.commit()
+
+    def _insert_syssetting(self, context_id: str, timetag, context, payload: dict):
+        module_type = payload.get("compressor_drive_type", "")
+        sql = (
+            "INSERT INTO [SYSSETTING] "
+            "(CONTEXTID, TIMETAG, TIME01, FIELD_1, FIELD_2, FIELD_3, FIELD_4, FIELD_6, FIELD_7) "
+            "VALUES (?, ?, GETDATE(), ?, ?, ?, ?, 1, ?)"
+        )
+        values = [
+            context_id,
+            timetag,
+            context.factory_code,
+            context.system_type,
+            context.equipment_type,
+            context.machine_id,
+            module_type,
+        ]
         cursor = self._conn.cursor()
         cursor.execute(sql, values)
         self._conn.commit()
@@ -115,7 +168,7 @@ class DBWriter:
                 continue
 
             try:
-                self._insert(item["table"], item["payload"])
+                self._insert(item["table"], item["payload"], item.get("context"))
                 self._last_keepalive = time.monotonic()  # insert counts as activity
             except pyodbc.Error as e:
                 sqlstate = e.args[0] if e.args else ""
