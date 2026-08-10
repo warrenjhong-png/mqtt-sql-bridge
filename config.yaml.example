@@ -13,12 +13,29 @@ mqtt:
       table: "YOUR_TABLE_NAME_2"
 
 db:
+  # false = MQTT test mode; save raw_json only and do not connect to SQL Server
+  enabled: true
   server: "YOUR_SQL_SERVER_IP"
   database: "YOUR_DATABASE_NAME"
   username: "YOUR_DB_USERNAME"
   password: "YOUR_DB_PASSWORD"
   driver: "ODBC Driver 18 for SQL Server"
   reconnect_delay: 5
+
+dispatch:
+  enabled: false
+  factory_code: "YOUR_FACTORY_CODE"
+  system_type: "TecoS1"
+  sources:
+    - table: "YOUR_SOURCE_TABLE_1"
+      source_field: "FIELD_2"
+      target_field: "FIELD_1"
+    - table: "YOUR_SOURCE_TABLE_2"
+      source_field: "FIELD_2"
+      target_field: "FIELD_2"
+    - table: "YOUR_SOURCE_TABLE_3"
+      source_field: "FIELD_2"
+      target_field: "FIELD_3"
 
 log:
   dir: "logs"

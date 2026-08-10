@@ -55,7 +55,7 @@ class DataAggregator:
             self._flush(reason="shutdown")
 
     def ingest(self, table: str, payload: dict, context=None):
-        """Called by MQTTReceiver on every incoming message."""
+        """每收到一筆 MQTT 訊息即呼叫；依設定選擇直通或暫存。"""
         if self.interval == 0:
             self._enqueue(table, payload, context)
         else:
@@ -71,6 +71,7 @@ class DataAggregator:
             self._flush(reason="interval")
 
     def _flush(self, reason: str = "interval"):
+        # 鎖內只交換 buffer；平均運算與 Queue 操作在鎖外執行。
         with self._lock:
             buffers_snapshot = self._buffers
             self._buffers = {}
@@ -88,12 +89,14 @@ class DataAggregator:
 
     def _enqueue(self, table: str, payload: dict, context=None):
         try:
+            # 不等待空位，以免 DB 過慢時反向阻塞 MQTT 收訊執行緒。
             self.msg_queue.put_nowait({"table": table, "payload": payload, "context": context})
         except queue.Full:
             self.logger.warning("Queue is full, dropping message")
 
     @staticmethod
     def _average(payloads: List[dict]) -> dict:
+        """數值欄位取平均；文字與時間戳等非數值欄位取最後一筆。"""
         result = {}
         all_keys = payloads[0].keys()
         for key in all_keys:

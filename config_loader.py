@@ -6,6 +6,7 @@ import yaml
 
 @dataclass
 class TopicContext:
+    """用來建立 CONTEXTID，並寫入 SYSSETTING 的設備識別資訊。"""
     factory_code: str
     system_type: str
     equipment_type: str
@@ -14,6 +15,7 @@ class TopicContext:
 
 @dataclass
 class TopicTableMapping:
+    """一個 MQTT topic 對應一張 SQL 主表及一組設備資訊。"""
     topic: str
     table: str
     context: TopicContext
@@ -33,12 +35,28 @@ class MQTTConfig:
 
 @dataclass
 class DBConfig:
+    enabled: bool
     server: str
     database: str
     username: str
     password: str
     driver: str
     reconnect_delay: int
+
+
+@dataclass
+class DispatchSource:
+    table: str
+    source_field: str
+    target_field: str
+
+
+@dataclass
+class DispatchConfig:
+    enabled: bool
+    factory_code: str
+    system_type: str
+    sources: List[DispatchSource]
 
 
 @dataclass
@@ -56,6 +74,7 @@ class RawJsonConfig:
 class AppConfig:
     mqtt: MQTTConfig
     db: DBConfig
+    dispatch: DispatchConfig
     log: LogConfig
     raw_json: RawJsonConfig
     queue_maxsize: int
@@ -63,6 +82,8 @@ class AppConfig:
 
 
 class ConfigLoader:
+    """將 YAML 設定轉成具名 dataclass，供其他模組共用。"""
+
     def __init__(
         self,
         config_path: str = "config.yaml",
@@ -72,6 +93,7 @@ class ConfigLoader:
         self.mapping_path = mapping_path
 
     def load(self) -> tuple[AppConfig, Dict[str, str]]:
+        # config.yaml 保存環境設定；field_mapping.yaml 保存欄位對應。
         with open(self.config_path, "r", encoding="utf-8") as f:
             raw = yaml.safe_load(f)
 
@@ -87,6 +109,7 @@ class ConfigLoader:
             client_id=mqtt_raw.get("client_id", "mqtt_sql_bridge"),
             keepalive=mqtt_raw.get("keepalive", 60),
             reconnect_delay=mqtt_raw.get("reconnect_delay", 10),
+            # 每個 topic 各自決定資料要寫入哪張 table。
             topics=[
                 TopicTableMapping(
                     topic=t["topic"],
@@ -104,12 +127,28 @@ class ConfigLoader:
 
         db_raw = raw["db"]
         db = DBConfig(
+            enabled=db_raw.get("enabled", True),
             server=db_raw["server"],
             database=db_raw["database"],
             username=db_raw["username"],
             password=db_raw["password"],
             driver=db_raw.get("driver", "ODBC Driver 17 for SQL Server"),
             reconnect_delay=db_raw.get("reconnect_delay", 5),
+        )
+
+        dispatch_raw = raw.get("dispatch", {})
+        dispatch = DispatchConfig(
+            enabled=dispatch_raw.get("enabled", False),
+            factory_code=dispatch_raw.get("factory_code", ""),
+            system_type=dispatch_raw.get("system_type", ""),
+            sources=[
+                DispatchSource(
+                    table=source["table"],
+                    source_field=source.get("source_field", "FIELD_2"),
+                    target_field=source["target_field"],
+                )
+                for source in dispatch_raw.get("sources", [])
+            ],
         )
 
         log_raw = raw.get("log", {})
@@ -124,10 +163,12 @@ class ConfigLoader:
         config = AppConfig(
             mqtt=mqtt,
             db=db,
+            dispatch=dispatch,
             log=log,
             raw_json=raw_json,
             queue_maxsize=raw.get("queue_maxsize", 10000),
             sampling_interval_seconds=raw.get("sampling_interval_seconds", 0),
         )
 
+        # field_mapping 格式：DB 欄位名稱 -> MQTT JSON key。
         return config, field_mapping

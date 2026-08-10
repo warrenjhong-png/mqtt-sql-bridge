@@ -4,6 +4,7 @@ from logging.handlers import TimedRotatingFileHandler
 
 
 def setup_logger(log_dir: str = "logs", level: str = "INFO") -> logging.Logger:
+    """建立同時輸出至 console 與每日輪替檔案的共用 logger。"""
     os.makedirs(log_dir, exist_ok=True)
 
     logger = logging.getLogger("mqtt_sql_bridge")

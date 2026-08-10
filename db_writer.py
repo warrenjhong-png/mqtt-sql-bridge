@@ -1,5 +1,6 @@
 import logging
 import queue
+import re
 import threading
 import time
 from datetime import datetime
@@ -7,28 +8,51 @@ from typing import Dict
 
 import pyodbc
 
-KEEPALIVE_INTERVAL = 300  # seconds, ping DB every 5 minutes to prevent idle disconnect
+
+KEEPALIVE_INTERVAL = 300
+IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 class DBWriter:
+    """從 Queue 取出 MQTT 資料，寫入來源表並執行三表 dispatch。"""
+
     def __init__(
         self,
         db_config,
+        dispatch_config,
         field_mapping: Dict[str, str],
         msg_queue: queue.Queue,
         logger: logging.Logger,
     ):
         self.db_config = db_config
+        self.dispatch_config = dispatch_config
         self.msg_queue = msg_queue
         self.logger = logger
 
-        # Sort by FIELD_x key to guarantee consistent column order
+        # FIELD_x 與 JSON key 必須使用同一排序，才能保持欄位和值對應。
         self._fields = sorted(field_mapping.items())
+        self._dispatch_tables = {
+            source.table for source in self.dispatch_config.sources
+        }
+        self._validate_identifiers()
 
         self._conn = None
         self._last_keepalive = 0.0
         self._stop_event = threading.Event()
-        self._thread = threading.Thread(target=self._run, name="DBWriter", daemon=True)
+        self._thread = threading.Thread(
+            target=self._run, name="DBWriter", daemon=True
+        )
+
+    def _validate_identifiers(self):
+        """動態 SQL 的表名和欄名只能使用安全的 SQL 識別字。"""
+        identifiers = [name for name, _ in self._fields]
+        for source in self.dispatch_config.sources:
+            identifiers.extend(
+                [source.table, source.source_field, source.target_field]
+            )
+        invalid = [name for name in identifiers if not IDENTIFIER_PATTERN.fullmatch(name)]
+        if invalid:
+            raise ValueError(f"Invalid SQL identifier(s): {invalid}")
 
     def start(self):
         self._thread.start()
@@ -54,7 +78,9 @@ class DBWriter:
             "TrustServerCertificate=yes;"
         )
         self._conn = pyodbc.connect(conn_str, timeout=10)
-        self.logger.info(f"DB connected to {self.db_config.server}/{self.db_config.database}")
+        self.logger.info(
+            f"DB connected to {self.db_config.server}/{self.db_config.database}"
+        )
 
     def _reconnect(self) -> bool:
         try:
@@ -62,90 +88,195 @@ class DBWriter:
             return True
         except Exception as e:
             self.logger.warning(
-                f"DB reconnect failed: {e}, retry in {self.db_config.reconnect_delay}s"
+                f"DB reconnect failed: {e}, retry in "
+                f"{self.db_config.reconnect_delay}s"
             )
             self._stop_event.wait(self.db_config.reconnect_delay)
             return False
 
-    def _build_context_id(self, context, payload: dict) -> str:
+    def _payload_timestamp(self, payload: dict) -> datetime:
+        """接受 Timestamp／timestamp，無效時才使用程式收到資料的時間。"""
+        timestamp_text = payload.get("Timestamp") or payload.get("timestamp")
+        if timestamp_text:
+            try:
+                return datetime.fromisoformat(timestamp_text)
+            except (ValueError, TypeError):
+                self.logger.warning(
+                    f"Invalid Timestamp format: {timestamp_text!r}, "
+                    "falling back to current time"
+                )
+        return datetime.now()
+
+    @staticmethod
+    def _timestamp_serial(timetag: datetime) -> str:
+        # 秒以下資訊刻意捨去：同一秒的七張來源表會得到相同 ID。
+        return timetag.strftime("%Y%m%d%H%M%S")
+
+    def _build_original_context_id(
+        self, context, payload: dict, timetag: datetime
+    ) -> str:
+        """保留修改前 Parser 使用的完整 ID，寫入來源表 FIELD_20。"""
         module_type = payload.get("compressor_drive_type", "")
-        ts_str = payload.get("Timestamp", "")
-        try:
-            serial = datetime.fromisoformat(ts_str).strftime("%Y%m%d%H%M%S")
-        except (ValueError, TypeError):
-            serial = datetime.now().strftime("%Y%m%d%H%M%S")
+        serial = self._timestamp_serial(timetag)
         return (
             f"{context.factory_code}_{context.system_type}_"
             f"{context.equipment_type}_{context.machine_id}_"
             f"{module_type}_{serial}"
         )
 
+    def _build_context_id(self, context, timetag: datetime) -> str:
+        """建立七張來源表共用的新 ID：Factory_System_Timestamp。"""
+        if self.dispatch_config.enabled:
+            factory_code = self.dispatch_config.factory_code
+            system_type = self.dispatch_config.system_type
+        else:
+            factory_code = context.factory_code
+            system_type = context.system_type
+        return (
+            f"{factory_code}_{system_type}_{self._timestamp_serial(timetag)}"
+        )
+
     def _insert(self, table: str, payload: dict, context=None):
-        field_names = [f for f, _ in self._fields]
+        if not IDENTIFIER_PATTERN.fullmatch(table):
+            raise ValueError(f"Invalid SQL table name: {table!r}")
+
+        timetag = self._payload_timestamp(payload)
+        context_id = self._build_context_id(context, timetag) if context else None
+        original_context_id = (
+            self._build_original_context_id(context, payload, timetag)
+            if context
+            else None
+        )
+
+        field_names = [field for field, _ in self._fields]
         values = [payload.get(key) for _, key in self._fields]
 
-        timetag = None
-        timetag_str = payload.get("Timestamp")
-        if timetag_str:
-            try:
-                timetag = datetime.fromisoformat(timetag_str)
-            except (ValueError, TypeError):
-                self.logger.warning(f"Invalid Timestamp format: {timetag_str!r}, falling back to GETDATE()")
-
-        context_id = self._build_context_id(context, payload) if context else None
+        # FIELD_20 專門保存修改前的 CONTEXTID，方便追溯舊資料命名。
+        if "FIELD_20" not in field_names:
+            field_names.append("FIELD_20")
+            values.append(original_context_id)
 
         columns = ", ".join(field_names)
         placeholders = ", ".join(["?"] * len(field_names))
-        if timetag is not None:
-            sql = f"INSERT INTO [{table}] (CONTEXTID, TIMETAG, TIME01, {columns}) VALUES (?, ?, GETDATE(), {placeholders})"
-            values = [context_id, timetag] + values
-        else:
-            sql = f"INSERT INTO [{table}] (CONTEXTID, TIMETAG, TIME01, {columns}) VALUES (?, GETDATE(), GETDATE(), {placeholders})"
-            values = [context_id] + values
+        sql = (
+            f"INSERT INTO [{table}] "
+            f"(CONTEXTID, TIMETAG, TIME01, {columns}) "
+            f"VALUES (?, ?, GETDATE(), {placeholders})"
+        )
 
         cursor = self._conn.cursor()
-        cursor.execute(sql, values)
-        self._conn.commit()
+        try:
+            cursor.execute(sql, [context_id, timetag] + values)
 
-        if context:
-            self._insert_metrology(context_id, timetag, payload)
-            self._insert_syssetting(context_id, timetag, context, payload)
+            if self.dispatch_config.enabled and table in self._dispatch_tables:
+                self._dispatch_if_ready(cursor, context_id, timetag)
+            elif not self.dispatch_config.enabled and context:
+                self._insert_legacy_related(
+                    cursor, context_id, timetag, context, payload
+                )
 
-    def _insert_metrology(self, context_id: str, timetag, payload: dict):
-        energy = payload.get("compressor_energy_consumption")
-        flow   = payload.get("area_entrance_instant_flow")
-        if timetag is not None:
-            sql = "INSERT INTO [METROLOGY] (CONTEXTID, TIMETAG, FIELD_1, FIELD_2) VALUES (?, ?, ?, ?)"
-            values = [context_id, timetag, energy, flow]
-        else:
-            sql = "INSERT INTO [METROLOGY] (CONTEXTID, TIMETAG, FIELD_1, FIELD_2) VALUES (?, GETDATE(), ?, ?)"
-            values = [context_id, energy, flow]
-        cursor = self._conn.cursor()
-        cursor.execute(sql, values)
-        self._conn.commit()
+            # 來源表與可能產生的 METROLOGY／SYSSETTING 一次提交。
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
 
-    def _insert_syssetting(self, context_id: str, timetag, context, payload: dict):
-        module_type = payload.get("compressor_drive_type", "")
+    def _dispatch_if_ready(self, cursor, context_id: str, timetag: datetime):
+        """三張指定來源表都有相同 CONTEXTID 時，才建立彙整資料。"""
+        metrology_values = {}
+        for source in self.dispatch_config.sources:
+            sql = (
+                f"SELECT TOP 1 [{source.source_field}] FROM [{source.table}] "
+                "WHERE CONTEXTID = ?"
+            )
+            row = cursor.execute(sql, context_id).fetchone()
+            if row is None:
+                self.logger.debug(
+                    f"Dispatch waiting: context_id={context_id}, "
+                    f"missing_table={source.table}"
+                )
+                return
+            metrology_values[source.target_field] = row[0]
+
+        self._insert_metrology_if_missing(
+            cursor, context_id, timetag, metrology_values
+        )
+        self._insert_syssetting_if_missing(cursor, context_id, timetag)
+        self.logger.info(f"Dispatch completed: context_id={context_id}")
+
+    @staticmethod
+    def _record_exists(cursor, table: str, context_id: str) -> bool:
+        row = cursor.execute(
+            f"SELECT TOP 1 1 FROM [{table}] WHERE CONTEXTID = ?", context_id
+        ).fetchone()
+        return row is not None
+
+    def _insert_metrology_if_missing(
+        self, cursor, context_id: str, timetag: datetime, values_by_field: dict
+    ):
+        if self._record_exists(cursor, "METROLOGY", context_id):
+            return
+
+        columns = list(values_by_field.keys())
+        placeholders = ", ".join(["?"] * len(columns))
+        column_sql = ", ".join(f"[{column}]" for column in columns)
+        sql = (
+            "INSERT INTO [METROLOGY] "
+            f"(CONTEXTID, TIMETAG, {column_sql}) "
+            f"VALUES (?, ?, {placeholders})"
+        )
+        cursor.execute(
+            sql,
+            [context_id, timetag]
+            + [values_by_field[column] for column in columns],
+        )
+
+    def _insert_syssetting_if_missing(
+        self, cursor, context_id: str, timetag: datetime
+    ):
+        if self._record_exists(cursor, "SYSSETTING", context_id):
+            return
+
         sql = (
             "INSERT INTO [SYSSETTING] "
-            "(CONTEXTID, TIMETAG, TIME01, FIELD_1, FIELD_2, FIELD_3, FIELD_4, FIELD_6, FIELD_7) "
-            "VALUES (?, ?, GETDATE(), ?, ?, ?, ?, 1, ?)"
+            "(CONTEXTID, TIMETAG, TIME01, FIELD_1, FIELD_2, "
+            "FIELD_3, FIELD_4, FIELD_6, FIELD_7) "
+            "VALUES (?, ?, GETDATE(), ?, ?, NULL, NULL, 1, NULL)"
         )
-        values = [
+        cursor.execute(
+            sql,
+            context_id,
+            timetag,
+            self.dispatch_config.factory_code,
+            self.dispatch_config.system_type,
+        )
+
+    def _insert_legacy_related(
+        self, cursor, context_id, timetag, context, payload
+    ):
+        """dispatch 未啟用時，保留原本逐筆建立兩張附屬表的行為。"""
+        cursor.execute(
+            "INSERT INTO [METROLOGY] "
+            "(CONTEXTID, TIMETAG, FIELD_1, FIELD_2) VALUES (?, ?, ?, ?)",
+            context_id,
+            timetag,
+            payload.get("compressor_energy_consumption"),
+            payload.get("area_entrance_instant_flow"),
+        )
+        cursor.execute(
+            "INSERT INTO [SYSSETTING] "
+            "(CONTEXTID, TIMETAG, TIME01, FIELD_1, FIELD_2, FIELD_3, "
+            "FIELD_4, FIELD_6, FIELD_7) "
+            "VALUES (?, ?, GETDATE(), ?, ?, ?, ?, 1, NULL)",
             context_id,
             timetag,
             context.factory_code,
             context.system_type,
             context.equipment_type,
             context.machine_id,
-            module_type,
-        ]
-        cursor = self._conn.cursor()
-        cursor.execute(sql, values)
-        self._conn.commit()
+        )
 
     def _keepalive(self):
-        """Send a lightweight query to prevent idle connection drop by firewall/server."""
         try:
             self._conn.cursor().execute("SELECT 1")
             self._last_keepalive = time.monotonic()
@@ -162,22 +293,23 @@ class DBWriter:
             try:
                 item = self.msg_queue.get(timeout=1)
             except queue.Empty:
-                # No messages — check if keepalive is due
                 if time.monotonic() - self._last_keepalive >= KEEPALIVE_INTERVAL:
                     self._keepalive()
                 continue
 
             try:
-                self._insert(item["table"], item["payload"], item.get("context"))
-                self._last_keepalive = time.monotonic()  # insert counts as activity
+                self._insert(
+                    item["table"], item["payload"], item.get("context")
+                )
+                self._last_keepalive = time.monotonic()
             except pyodbc.Error as e:
                 sqlstate = e.args[0] if e.args else ""
                 if sqlstate == "23000":
-                    # Duplicate primary key — another instance already wrote this record, skip silently
-                    self.logger.debug(f"Duplicate record skipped (another instance may have written it): {e}")
+                    self.logger.debug(f"Duplicate/integrity record skipped: {e}")
                 else:
-                    # Real connection error — trigger reconnect
-                    self.logger.error(f"DB insert error: {e} (data saved in raw_json)")
+                    self.logger.error(
+                        f"DB insert error: {e} (data saved in raw_json)"
+                    )
                     self._conn = None
             except Exception as e:
                 self.logger.error(f"Unexpected DB error: {e}")
