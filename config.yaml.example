@@ -26,6 +26,13 @@ dispatch:
   enabled: false
   factory_code: "YOUR_FACTORY_CODE"
   system_type: "TecoS1"
+  # 三表配對並完成 DB commit 後，可分別呼叫 DispatchX 與 DispatchY。
+  dispatch_x:
+    enabled: false
+    url: "http://127.0.0.1:5099/SIC/GetDispatch?dispatchName=X&command=DispatchX"
+  dispatch_y:
+    enabled: false
+    url: "http://127.0.0.1:5099/SIC/GetDispatch?dispatchName=Y&command=DispatchY"
   sources:
     - table: "YOUR_SOURCE_TABLE_1"
       source_field: "FIELD_2"

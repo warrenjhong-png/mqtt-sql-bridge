@@ -1,9 +1,11 @@
+import json
 import logging
 import queue
 import sys
 import types
 import unittest
 from datetime import datetime
+from unittest.mock import MagicMock, patch
 
 
 # 測試不需要真正連線 DB；未安裝 pyodbc 時提供最小替身供模組載入。
@@ -130,6 +132,35 @@ class DBWriterTests(unittest.TestCase):
         self.assertIn("[FIELD_1], [FIELD_2], [FIELD_3]", metrology_sql)
         self.assertEqual(list(metrology_params[0][-3:]), [10.0, 20.0, 30.0])
         self.assertIn("INSERT INTO [SYSSETTING]", cursor.inserts[1][0])
+
+    @patch("db_writer.urlopen")
+    def test_sends_dispatch_x_and_y_with_context_id(self, mock_urlopen):
+        writer = make_writer()
+        writer.dispatch_config.dispatch_x = Object(
+            enabled=True,
+            url="http://localhost/SIC/GetDispatch?dispatchName=X&command=DispatchX",
+        )
+        writer.dispatch_config.dispatch_y = Object(
+            enabled=True,
+            url="http://localhost/SIC/GetDispatch?dispatchName=Y&command=DispatchY",
+        )
+        response = MagicMock()
+        response.status = 200
+        response.getcode.return_value = 200
+        mock_urlopen.return_value.__enter__.return_value = response
+
+        context_id = "zhongli-A8_TecoS1_20260708144639"
+        writer._send_web_dispatches(context_id)
+
+        self.assertEqual(mock_urlopen.call_count, 2)
+        requests = [call.args[0] for call in mock_urlopen.call_args_list]
+        self.assertIn("dispatchName=X&command=DispatchX", requests[0].full_url)
+        self.assertIn("dispatchName=Y&command=DispatchY", requests[1].full_url)
+        for request in requests:
+            self.assertEqual(
+                json.loads(request.data.decode("utf-8")),
+                {"pieceId": context_id},
+            )
 
 
 if __name__ == "__main__":

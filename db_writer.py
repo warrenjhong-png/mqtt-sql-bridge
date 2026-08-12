@@ -1,3 +1,4 @@
+import json
 import logging
 import queue
 import re
@@ -5,6 +6,7 @@ import threading
 import time
 from datetime import datetime
 from typing import Dict
+from urllib.request import Request, urlopen
 
 import pyodbc
 
@@ -165,11 +167,14 @@ class DBWriter:
         )
 
         cursor = self._conn.cursor()
+        dispatch_ready = False
         try:
             cursor.execute(sql, [context_id, timetag] + values)
 
             if self.dispatch_config.enabled and table in self._dispatch_tables:
-                self._dispatch_if_ready(cursor, context_id, timetag)
+                dispatch_ready = self._dispatch_if_ready(
+                    cursor, context_id, timetag
+                )
             elif not self.dispatch_config.enabled and context:
                 self._insert_legacy_related(
                     cursor, context_id, timetag, context, payload
@@ -177,6 +182,9 @@ class DBWriter:
 
             # 來源表與可能產生的 METROLOGY／SYSSETTING 一次提交。
             self._conn.commit()
+            # WebApiSIC 只能在資料庫 transaction 成功後通知。
+            if dispatch_ready:
+                self._send_web_dispatches(context_id)
         except Exception:
             self._conn.rollback()
             raise
@@ -195,7 +203,7 @@ class DBWriter:
                     f"Dispatch waiting: context_id={context_id}, "
                     f"missing_table={source.table}"
                 )
-                return
+                return False
             metrology_values[source.target_field] = row[0]
 
         self._insert_metrology_if_missing(
@@ -203,6 +211,48 @@ class DBWriter:
         )
         self._insert_syssetting_if_missing(cursor, context_id, timetag)
         self.logger.info(f"Dispatch completed: context_id={context_id}")
+        return True
+
+    def _send_web_dispatches(self, context_id: str):
+        """資料配對完成後，依設定分別呼叫 DispatchX 與 DispatchY。"""
+        endpoints = (
+            ("DispatchX", self.dispatch_config.dispatch_x),
+            ("DispatchY", self.dispatch_config.dispatch_y),
+        )
+        for name, endpoint in endpoints:
+            if not endpoint.enabled:
+                continue
+            if not endpoint.url:
+                self.logger.warning(f"{name} enabled but URL is empty")
+                continue
+            self._post_web_dispatch(name, endpoint.url, context_id)
+
+    def _post_web_dispatch(self, name: str, url: str, context_id: str):
+        """以 CONTEXTID 作為 pieceId；單一 API 失敗不阻止另一個 API。"""
+        body = json.dumps({"pieceId": context_id}).encode("utf-8")
+        request = Request(
+            url,
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=10) as response:
+                status = getattr(response, "status", response.getcode())
+                if 200 <= status < 300:
+                    self.logger.info(
+                        f"{name} succeeded: context_id={context_id}, "
+                        f"status={status}"
+                    )
+                else:
+                    self.logger.error(
+                        f"{name} failed: context_id={context_id}, "
+                        f"status={status}"
+                    )
+        except Exception as error:
+            self.logger.error(
+                f"{name} request failed: context_id={context_id}, error={error}"
+            )
 
     @staticmethod
     def _record_exists(cursor, table: str, context_id: str) -> bool:

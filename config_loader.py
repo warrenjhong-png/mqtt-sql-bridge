@@ -52,11 +52,20 @@ class DispatchSource:
 
 
 @dataclass
+class DispatchEndpoint:
+    """WebApiSIC Dispatch API 的獨立開關與完整 URL。"""
+    enabled: bool
+    url: str
+
+
+@dataclass
 class DispatchConfig:
     enabled: bool
     factory_code: str
     system_type: str
     sources: List[DispatchSource]
+    dispatch_x: DispatchEndpoint
+    dispatch_y: DispatchEndpoint
 
 
 @dataclass
@@ -149,6 +158,14 @@ class ConfigLoader:
                 )
                 for source in dispatch_raw.get("sources", [])
             ],
+            dispatch_x=DispatchEndpoint(
+                enabled=dispatch_raw.get("dispatch_x", {}).get("enabled", False),
+                url=dispatch_raw.get("dispatch_x", {}).get("url", ""),
+            ),
+            dispatch_y=DispatchEndpoint(
+                enabled=dispatch_raw.get("dispatch_y", {}).get("enabled", False),
+                url=dispatch_raw.get("dispatch_y", {}).get("url", ""),
+            ),
         )
 
         log_raw = raw.get("log", {})

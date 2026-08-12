@@ -1,0 +1,14 @@
+services:
+  mqtt-sql-bridge-dispatch-test:
+    build: .
+    container_name: mqtt_sql_bridge_dispatch_test
+    restart: unless-stopped
+    volumes:
+      - ./logs:/app/logs
+      - ./raw_json:/app/raw_json
+      - ./config.yaml:/app/config.yaml:ro
+      - ./field_mapping.yaml:/app/field_mapping.yaml:ro
+    environment:
+      - TZ=Asia/Taipei
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

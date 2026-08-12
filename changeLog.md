@@ -30,3 +30,14 @@
 - 真實資料的相同設備 Timestamp 約相隔 111～144 秒才全部抵達 Parser，dispatch 必須保留未配對資料。
 - `PROCESS_SA37.FIELD_2` 在本次真實資料中為空值，正式啟用 DB 前需確認 `METROLOGY.FIELD_2` 的正確來源欄位。
 - `config.yaml` 含環境連線資訊，維持不納入版本控制；可提交的設定範例在 `config.yaml.example`。
+
+# 2026-08-11
+
+## WebApiSIC DispatchX／DispatchY
+
+- 新增 DispatchX、DispatchY 各自的啟用開關與 URL 設定。
+- 三張來源表具有相同 CONTEXTID，且 METROLOGY／SYSSETTING transaction commit 成功後，同時呼叫已啟用的 DispatchX 與 DispatchY。
+- DispatchX 使用 `dispatchName=X&command=DispatchX`；DispatchY 使用 `dispatchName=Y&command=DispatchY`。
+- POST JSON Body 使用 `{"pieceId": "<CONTEXTID>"}`。
+- X、Y 呼叫彼此獨立；任一呼叫失敗不回滾 DB，也不阻止另一個呼叫。
+- 新增設定載入及雙 Dispatch HTTP mock 單元測試。
