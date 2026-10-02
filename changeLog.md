@@ -1,3 +1,26 @@
+# 2026-10-01
+
+## Dispatch API POST
+
+- DispatchX／DispatchY 改為使用 HTTP POST。
+- URL query 與 JSON body 都傳送 `dispatchName` 及該批第 N 筆 CONTEXTID（`command`）。
+- Request header 設為 `Content-Type: application/json`。
+
+# 2026-09-30
+
+## SYSSETTING FIELD_7
+
+- `SYSSETTING.FIELD_7` 改為固定寫入 `IN_FLOW_FORECAST`。
+- 三表配對模式與 Dispatch 關閉時的舊版相容模式皆套用相同值。
+- 新增單元測試，確認兩條寫入路徑的 `FIELD_7` SQL 參數。
+
+## Dispatch 第 N 筆預測
+
+- Dispatch 累積達 `batch_size` 後，只發送該批第 N 筆的 CONTEXTID，不再逐筆發送整批。
+- Dispatch URL 的 `command` query parameter 會動態替換為選中的 CONTEXTID。
+- URL 路徑更新為 `/SICApi/sic/GetDispatch`，X/Y 由 `dispatchName` 區分。
+- Windows Docker 使用 `host.docker.internal` 連回主機服務。
+
 # 2026-08-10
 
 ## MQTT 測試模式

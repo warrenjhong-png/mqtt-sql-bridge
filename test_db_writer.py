@@ -68,6 +68,7 @@ def make_writer():
             enabled=True,
             factory_code="zhongli-A8",
             system_type="TecoS1",
+            batch_size=1,
             sources=sources,
         ),
         {"FIELD_1": "compressor_drive_type"},
@@ -131,18 +132,43 @@ class DBWriterTests(unittest.TestCase):
         metrology_sql, metrology_params = cursor.inserts[0]
         self.assertIn("[FIELD_1], [FIELD_2], [FIELD_3]", metrology_sql)
         self.assertEqual(list(metrology_params[0][-3:]), [10.0, 20.0, 30.0])
-        self.assertIn("INSERT INTO [SYSSETTING]", cursor.inserts[1][0])
+        syssetting_sql, syssetting_params = cursor.inserts[1]
+        self.assertIn("INSERT INTO [SYSSETTING]", syssetting_sql)
+        self.assertIn("FIELD_7", syssetting_sql)
+        self.assertEqual(syssetting_params[-1], "IN_FLOW_FORECAST")
+
+    def test_legacy_syssetting_sets_field_7_to_in_flow_forecast(self):
+        writer = make_writer()
+        cursor = FakeCursor({})
+        context = Object(
+            factory_code="zhongli-C21",
+            system_type="PROCESS",
+            equipment_type="BSAV55A",
+            machine_id="c3",
+        )
+
+        writer._insert_legacy_related(
+            cursor,
+            "legacy-context-id",
+            datetime(2026, 9, 30, 12, 0, 0),
+            context,
+            {},
+        )
+
+        syssetting_sql, syssetting_params = cursor.inserts[1]
+        self.assertIn("FIELD_7", syssetting_sql)
+        self.assertEqual(syssetting_params[-1], "IN_FLOW_FORECAST")
 
     @patch("db_writer.urlopen")
     def test_sends_dispatch_x_and_y_with_context_id(self, mock_urlopen):
         writer = make_writer()
         writer.dispatch_config.dispatch_x = Object(
             enabled=True,
-            url="http://localhost/SIC/GetDispatch?dispatchName=X&command=DispatchX",
+            url="http://host.docker.internal/SICApi/sic/GetDispatch?dispatchName=X&command=PieceId",
         )
         writer.dispatch_config.dispatch_y = Object(
             enabled=True,
-            url="http://localhost/SIC/GetDispatch?dispatchName=Y&command=DispatchY",
+            url="http://host.docker.internal/SICApi/sic/GetDispatch?dispatchName=Y&command=PieceId",
         )
         response = MagicMock()
         response.status = 200
@@ -154,13 +180,58 @@ class DBWriterTests(unittest.TestCase):
 
         self.assertEqual(mock_urlopen.call_count, 2)
         requests = [call.args[0] for call in mock_urlopen.call_args_list]
-        self.assertIn("dispatchName=X&command=DispatchX", requests[0].full_url)
-        self.assertIn("dispatchName=Y&command=DispatchY", requests[1].full_url)
+        self.assertIn(
+            "dispatchName=X&command=zhongli-A8_TecoS1_20260708144639",
+            requests[0].full_url,
+        )
+        self.assertIn(
+            "dispatchName=Y&command=zhongli-A8_TecoS1_20260708144639",
+            requests[1].full_url,
+        )
         for request in requests:
-            self.assertEqual(
-                json.loads(request.data.decode("utf-8")),
-                {"pieceId": context_id},
-            )
+            self.assertEqual(request.get_method(), "POST")
+            self.assertEqual(request.get_header("Content-type"), "application/json")
+
+        self.assertEqual(
+            json.loads(requests[0].data.decode("utf-8")),
+            {
+                "dispatchName": "X",
+                "command": context_id,
+            },
+        )
+        self.assertEqual(
+            json.loads(requests[1].data.decode("utf-8")),
+            {
+                "dispatchName": "Y",
+                "command": context_id,
+            },
+        )
+
+    def test_waits_until_batch_size_then_sends_only_last_context_id(self):
+        writer = make_writer()
+        writer._dispatch_batch_size = 3
+        writer._send_web_dispatches = MagicMock()
+        context_ids = ["context-1", "context-2", "context-3"]
+
+        writer._queue_web_dispatch(context_ids[0])
+        writer._queue_web_dispatch(context_ids[1])
+        writer._send_web_dispatches.assert_not_called()
+
+        writer._queue_web_dispatch(context_ids[2])
+
+        writer._send_web_dispatches.assert_called_once_with("context-3")
+
+    def test_does_not_count_duplicate_context_id_twice(self):
+        writer = make_writer()
+        writer._dispatch_batch_size = 2
+        writer._send_web_dispatches = MagicMock()
+
+        writer._queue_web_dispatch("context-1")
+        writer._queue_web_dispatch("context-1")
+        writer._send_web_dispatches.assert_not_called()
+
+        writer._queue_web_dispatch("context-2")
+        writer._send_web_dispatches.assert_called_once_with("context-2")
 
 
 if __name__ == "__main__":

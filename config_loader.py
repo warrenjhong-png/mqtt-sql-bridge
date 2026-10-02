@@ -63,6 +63,7 @@ class DispatchConfig:
     enabled: bool
     factory_code: str
     system_type: str
+    batch_size: int
     sources: List[DispatchSource]
     dispatch_x: DispatchEndpoint
     dispatch_y: DispatchEndpoint
@@ -146,10 +147,14 @@ class ConfigLoader:
         )
 
         dispatch_raw = raw.get("dispatch", {})
+        dispatch_batch_size = dispatch_raw.get("batch_size", 1)
+        if not isinstance(dispatch_batch_size, int) or dispatch_batch_size < 1:
+            raise ValueError("dispatch.batch_size must be an integer greater than 0")
         dispatch = DispatchConfig(
             enabled=dispatch_raw.get("enabled", False),
             factory_code=dispatch_raw.get("factory_code", ""),
             system_type=dispatch_raw.get("system_type", ""),
+            batch_size=dispatch_batch_size,
             sources=[
                 DispatchSource(
                     table=source["table"],

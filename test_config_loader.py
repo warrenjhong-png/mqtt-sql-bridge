@@ -22,10 +22,10 @@ dispatch:
   system_type: TecoS1
   dispatch_x:
     enabled: true
-    url: http://localhost/SIC/GetDispatch?dispatchName=X&command=DispatchX
+    url: http://host.docker.internal/SICApi/sic/GetDispatch?dispatchName=X&command=PieceId
   dispatch_y:
     enabled: false
-    url: http://localhost/SIC/GetDispatch?dispatchName=Y&command=DispatchY
+    url: http://host.docker.internal/SICApi/sic/GetDispatch?dispatchName=Y&command=PieceId
 """
         with tempfile.TemporaryDirectory() as directory:
             config_path = Path(directory) / "config.yaml"
@@ -38,7 +38,7 @@ dispatch:
             ).load()
 
         self.assertTrue(config.dispatch.dispatch_x.enabled)
-        self.assertIn("DispatchX", config.dispatch.dispatch_x.url)
+        self.assertIn("dispatchName=X", config.dispatch.dispatch_x.url)
         self.assertFalse(config.dispatch.dispatch_y.enabled)
         self.assertIn("DispatchY", config.dispatch.dispatch_y.url)
 

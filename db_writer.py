@@ -6,6 +6,7 @@ import threading
 import time
 from datetime import datetime
 from typing import Dict
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 import pyodbc
@@ -36,6 +37,11 @@ class DBWriter:
         self._dispatch_tables = {
             source.table for source in self.dispatch_config.sources
         }
+        self._dispatch_batch_size = getattr(
+            self.dispatch_config, "batch_size", 1
+        )
+        self._pending_dispatch_ids = []
+        self._pending_dispatch_id_set = set()
         self._validate_identifiers()
 
         self._conn = None
@@ -184,7 +190,7 @@ class DBWriter:
             self._conn.commit()
             # WebApiSIC 只能在資料庫 transaction 成功後通知。
             if dispatch_ready:
-                self._send_web_dispatches(context_id)
+                self._queue_web_dispatch(context_id)
         except Exception:
             self._conn.rollback()
             raise
@@ -227,12 +233,53 @@ class DBWriter:
                 continue
             self._post_web_dispatch(name, endpoint.url, context_id)
 
+    def _queue_web_dispatch(self, context_id: str):
+        """累計完成配對的 ID；達到 batch_size 時只送出第 N 筆 ID。"""
+        if context_id in self._pending_dispatch_id_set:
+            return
+
+        self._pending_dispatch_ids.append(context_id)
+        self._pending_dispatch_id_set.add(context_id)
+        pending_count = len(self._pending_dispatch_ids)
+        self.logger.info(
+            f"Dispatch queued: context_id={context_id}, "
+            f"pending={pending_count}/{self._dispatch_batch_size}"
+        )
+        if pending_count < self._dispatch_batch_size:
+            return
+
+        selected_context_id = self._pending_dispatch_ids[-1]
+        self._pending_dispatch_ids = []
+        self._pending_dispatch_id_set = set()
+        self.logger.info(
+            f"Dispatch batch threshold reached: count={pending_count}, "
+            f"selected_context_id={selected_context_id}"
+        )
+        self._send_web_dispatches(selected_context_id)
+
+    @staticmethod
+    def _build_dispatch_url(url: str, context_id: str) -> str:
+        """將 URL 的 command 參數設為本批第 N 筆 CONTEXTID。"""
+        parts = urlsplit(url)
+        query = dict(parse_qsl(parts.query, keep_blank_values=True))
+        query["command"] = context_id
+        return urlunsplit(
+            (parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment)
+        )
+
     def _post_web_dispatch(self, name: str, url: str, context_id: str):
-        """以 CONTEXTID 作為 pieceId；單一 API 失敗不阻止另一個 API。"""
-        body = json.dumps({"pieceId": context_id}).encode("utf-8")
+        """以本批第 N 筆 CONTEXTID 作為 command，使用 POST 呼叫 API。"""
+        dispatch_url = self._build_dispatch_url(url, context_id)
+        query = dict(parse_qsl(urlsplit(dispatch_url).query, keep_blank_values=True))
+        payload = json.dumps(
+            {
+                "dispatchName": query.get("dispatchName", ""),
+                "command": context_id,
+            }
+        ).encode("utf-8")
         request = Request(
-            url,
-            data=body,
+            dispatch_url,
+            data=payload,
             headers={"Content-Type": "application/json"},
             method="POST",
         )
@@ -291,7 +338,7 @@ class DBWriter:
             "INSERT INTO [SYSSETTING] "
             "(CONTEXTID, TIMETAG, TIME01, FIELD_1, FIELD_2, "
             "FIELD_3, FIELD_4, FIELD_6, FIELD_7) "
-            "VALUES (?, ?, GETDATE(), ?, ?, NULL, NULL, 1, NULL)"
+            "VALUES (?, ?, GETDATE(), ?, ?, NULL, NULL, 1, ?)"
         )
         cursor.execute(
             sql,
@@ -299,6 +346,7 @@ class DBWriter:
             timetag,
             self.dispatch_config.factory_code,
             self.dispatch_config.system_type,
+            "IN_FLOW_FORECAST",
         )
 
     def _insert_legacy_related(
@@ -317,13 +365,14 @@ class DBWriter:
             "INSERT INTO [SYSSETTING] "
             "(CONTEXTID, TIMETAG, TIME01, FIELD_1, FIELD_2, FIELD_3, "
             "FIELD_4, FIELD_6, FIELD_7) "
-            "VALUES (?, ?, GETDATE(), ?, ?, ?, ?, 1, NULL)",
+            "VALUES (?, ?, GETDATE(), ?, ?, ?, ?, 1, ?)",
             context_id,
             timetag,
             context.factory_code,
             context.system_type,
             context.equipment_type,
             context.machine_id,
+            "IN_FLOW_FORECAST",
         )
 
     def _keepalive(self):

@@ -26,13 +26,15 @@ dispatch:
   enabled: false
   factory_code: "YOUR_FACTORY_CODE"
   system_type: "TecoS1"
-  # 三表配對並完成 DB commit 後，可分別呼叫 DispatchX 與 DispatchY。
+  # 累計 N 筆後，只用第 N 筆 CONTEXTID 發送一次；1 = 每筆發送。
+  batch_size: 1
+  # command=PieceId 是預留值；程式送出前會替換為該批第 N 筆 CONTEXTID。
   dispatch_x:
     enabled: false
-    url: "http://127.0.0.1:5099/SIC/GetDispatch?dispatchName=X&command=DispatchX"
+    url: "http://host.docker.internal/SICApi/sic/GetDispatch?dispatchName=X&command=PieceId"
   dispatch_y:
     enabled: false
-    url: "http://127.0.0.1:5099/SIC/GetDispatch?dispatchName=Y&command=DispatchY"
+    url: "http://host.docker.internal/SICApi/sic/GetDispatch?dispatchName=Y&command=PieceId"
   sources:
     - table: "YOUR_SOURCE_TABLE_1"
       source_field: "FIELD_2"
